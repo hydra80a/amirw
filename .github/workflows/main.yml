@@ -1,24 +1,153 @@
-name: دریافت فایل روت‌فایل سیستم
+name: خودکار دانلود و آپلود rootfs
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:        # اجرای دستی
+  schedule:
+    - cron: '0 */12 * * *'   # هر ۱۲ ساعت یکبار (اختیاری)
+  push:
+    paths:
+      - '.github/workflows/auto-rootfs.yml'
 
 jobs:
-  download-and-push:
+  fetch-all-archs:
+    strategy:
+      matrix:
+        arch: [aarch64, armv7l, x86_64, i686]
+        release: [22.04, 24.04]
+      fail-fast: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: ایجاد پوشه و دانلود فایل
+
+      - name: نصب پایتون و ابزارها
+        run: sudo apt update && sudo apt install -y python3-pip wget xz-utils
+      - name: نصب کتابخانه‌های پایتون
+        run: pip3 install requests
+
+      - name: اجرای اسکریپت دانلود خودکار
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p rootfs
-          curl -L -o rootfs/rootfs.tar.xz \
-          https://github.com/termux/proot-distro/releases/download/v4.34.2/almalinux-aarch64-pd-v4.34.2.tar.xz
-      - name: commit و push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add rootfs/
-          git diff --quiet && git diff --staged --quiet || git commit -m "افزودن فایل روت‌فایل"
-          git push
+          cat > /tmp/downloader.py << 'EOF'
+          #!/usr/bin/env python3
+          import os, sys, subprocess, time, hashlib
+          import requests
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          ARCH = os.getenv('MATRIX_ARCH', 'aarch64')
+          RELEASE = os.getenv('MATRIX_RELEASE', '22.04')
+          DEST_DIR = Path('ubuntu-rootfs') / f"{RELEASE}_{ARCH}"
+          DEST_DIR.mkdir(parents=True, exist_ok=True)
+          OUTPUT_FILE = DEST_DIR / 'rootfs.tar.xz'
+
+          # نقشه معماری‌ها به نام‌های استاندارد در منابع مختلف
+          arch_map = {
+              'aarch64': ['arm64', 'aarch64', 'arm64'],
+              'armv7l': ['armhf', 'armv7l', 'arm'],
+              'x86_64': ['amd64', 'x86_64', 'amd64'],
+              'i686': ['i386', 'i686', 'i386']
+          }
+          arch_names = arch_map.get(ARCH, [ARCH, ARCH, ARCH])
+
+          # لیست منابع با اولویت (بالا به پایین)
+          sources = [
+              # 1. Ubuntu Cloud Images (سریع و رسمی)
+              {
+                  'url': f"https://cloud-images.ubuntu.com/minimal/releases/{RELEASE}/release/ubuntu-{RELEASE}-minimal-cloudimg-{arch_names[0]}.rootfs.tar.xz",
+                  'name': 'Ubuntu Cloud Images'
+              },
+              # 2. cdimage.ubuntu.com (پایه)
+              {
+                  'url': f"http://cdimage.ubuntu.com/ubuntu-base/releases/{RELEASE}/release/ubuntu-base-{RELEASE}-base-{arch_names[1]}.tar.gz",
+                  'name': 'Ubuntu Base (cdimage)'
+              },
+              # 3. Linux Containers (لینوکس کانتینرز)
+              {
+                  'url': f"https://images.linuxcontainers.org/images/ubuntu/{RELEASE}/{arch_names[2]}/default/$(curl -s https://images.linuxcontainers.org/images/ubuntu/{RELEASE}/{arch_names[2]}/default/ | grep -oP '\\d{{8}}_\\d{{2}}:\\d{{2}}' | head -1 | tr ':' '_')/rootfs.tar.xz",
+                  'name': 'Linux Containers (dynamic)'
+              },
+              # 4. پروکسی گیت‌هاب (برای فایل‌های قدیمی termux)
+              {
+                  'url': f"https://gh-proxy.com/https://github.com/termux/proot-distro/releases/download/v4.34.2/almalinux-{arch_names[2]}-pd-v4.34.2.tar.xz",
+                  'name': 'GitHub Proxy (AlmaLinux)'
+              }
+          ]
+
+          def download_file(url, dest):
+              print(f"→ تلاش از {url[:80]}...")
+              try:
+                  r = requests.get(url, stream=True, timeout=60, headers={'User-Agent': 'Mozilla/5.0'})
+                  if r.status_code != 200:
+                      print(f"  ❌ کد وضعیت {r.status_code}")
+                      return False
+                  total = int(r.headers.get('content-length', 0))
+                  with open(dest, 'wb') as f:
+                      downloaded = 0
+                      for chunk in r.iter_content(chunk_size=8192):
+                          if chunk:
+                              f.write(chunk)
+                              downloaded += len(chunk)
+                              if total:
+                                  percent = (downloaded / total) * 100
+                                  print(f"\r  ⬇️  پیشرفت: {percent:.1f}%", end='')
+                  print(f"\n  ✅ دانلود شد: {dest.name} ({downloaded//1024//1024} MB)")
+                  return True
+              except Exception as e:
+                  print(f"  ❌ خطا: {e}")
+                  return False
+
+          def verify_file(filepath):
+              if filepath.exists() and filepath.stat().st_size > 10*1024*1024:  # >10MB
+                  return True
+              return False
+
+          def upload_to_github():
+              # استفاده از git داخل runner
+              subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=False)
+              subprocess.run(['git', 'config', 'user.email', 'github-actions[bot]@users.noreply.github.com'], check=False)
+              subprocess.run(['git', 'add', 'ubuntu-rootfs/'], check=False)
+              # چک کردن تغییرات
+              result = subprocess.run(['git', 'diff', '--cached', '--quiet'], check=False)
+              if result.returncode != 0:
+                  subprocess.run(['git', 'commit', '-m', f'[auto] افزودن rootfs برای {RELEASE}/{ARCH} [skip ci]'], check=False)
+                  subprocess.run(['git', 'push'], check=False)
+                  print("✅ تغییرات به مخزن ارسال شد.")
+              else:
+                  print("ℹ️ تغییری برای commit وجود ندارد.")
+
+          def main():
+              print(f"\n🚀 شروع دانلود برای {ARCH} / Ubuntu {RELEASE}")
+              for src in sources:
+                  # برای منبعی که نیاز به curl داینامیک دارد، اگر url شامل $(...) بود اجرا کن
+                  url = src['url']
+                  if '$(curl' in url:
+                      # استخراج و اجرای دستور داخل $()
+                      import re, subprocess
+                      cmd_match = re.search(r'\$\(([^)]+)\)', url)
+                      if cmd_match:
+                          cmd = cmd_match.group(1)
+                          try:
+                              output = subprocess.check_output(cmd, shell=True, text=True).strip()
+                              url = url.replace(f'$({cmd})', output)
+                          except:
+                              print(f"  ⚠️ خطا در اجرای دستور داینامیک: {cmd}")
+                              continue
+                  if download_file(url, OUTPUT_FILE) and verify_file(OUTPUT_FILE):
+                      print(f"✅ فایل معتبر است. آپلود به گیت‌هاب...")
+                      upload_to_github()
+                      return
+                  # پاک کردن فایل ناقص
+                  if OUTPUT_FILE.exists():
+                      OUTPUT_FILE.unlink()
+              print(f"❌ تمام منابع برای {ARCH}/{RELEASE} ناموفق بودند.")
+
+          if __name__ == "__main__":
+              main()
+          EOF
+          python3 /tmp/downloader.py
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+          MATRIX_RELEASE: ${{ matrix.release }}
