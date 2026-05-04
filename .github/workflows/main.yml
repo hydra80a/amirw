@@ -1,91 +1,29 @@
-name: V2Ray Connect to Arvan Worker
+name: دریافت فایل اوبونتو
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # اجرای دستی از طریق گیت‌هاب
+  schedule:
+    - cron: '0 0 * * 0'  # اجرای خودکار هر هفته
 
 jobs:
-  connect:
+  download-and-push:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
+      - name: دریافت کدهای مخزن
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # ۱. نصب V2Ray و راه‌اندازی سرور VMess روی پورت ۱۰۰۰۰
-      # ------------------------------------------------------------
-      - name: Setup V2Ray Server
+      - name: دانلود فایل اوبونتو
         run: |
-          curl -sL https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip -o v2ray.zip
-          unzip -q v2ray.zip -d v2ray
-          cd v2ray
+          mkdir -p ubuntu-files
+          curl -L -o ubuntu-files/ubuntu-aarch64.tar.xz \
+          https://github.com/termux/proot-distro/releases/download/v4.21.0/ubuntu-aarch64-pd-v4.21.0.tar.xz
 
-          # UUID باید دقیقاً با Worker یکسان باشد
-          cat > config.json << 'EOF'
-          {
-            "inbounds": [{
-              "port": 10000,
-              "protocol": "vmess",
-              "settings": {
-                "clients": [{
-                  "id": "b831381d-6324-4d53-ad4f-8cda48b30811",
-                  "alterId": 0
-                }]
-              }
-            }],
-            "outbounds": [{
-              "protocol": "freedom",
-              "settings": {}
-            }]
-          }
-          EOF
-
-          chmod +x v2ray
-          ./v2ray run &
-          sleep 2
-          echo "✅ V2Ray is running on :10000"
-
-      # ------------------------------------------------------------
-      # ۲. نصب websocat (نسخه پایدار)
-      # ------------------------------------------------------------
-      - name: Install websocat
+      - name: commit و push کردن فایل به مخزن
         run: |
-          curl -sL https://github.com/vi/websocat/releases/latest/download/websocat.x86_64-unknown-linux-musl -o websocat
-          chmod +x websocat
-          sudo mv websocat /usr/local/bin/
-          echo "✅ websocat installed"
-
-      # ------------------------------------------------------------
-      # ۳. بررسی سلامت Worker (تست Endpoint کانفیگ)
-      # ------------------------------------------------------------
-      - name: Verify Worker reachable
-        env:
-          WORKER_URL: ${{ secrets.ARVAN_WORKER_URL }}
-        run: |
-          echo "Checking Worker at $WORKER_URL/config ..."
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${WORKER_URL}/config")
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ Worker /config returned HTTP $HTTP_CODE. Check Worker deployment and Route."
-            exit 1
-          fi
-          echo "✅ Worker is reachable."
-
-      # ------------------------------------------------------------
-      # ۴. اتصال به Worker و ساخت تونل WebSocket ↔ TCP
-      # ------------------------------------------------------------
-      - name: Connect to Worker (WebSocket tunnel)
-        env:
-          WORKER_URL: ${{ secrets.ARVAN_WORKER_URL }}
-          CONNECT_PATH: "/connect"
-        run: |
-          echo "Establishing WebSocket tunnel to ${WORKER_URL}${CONNECT_PATH} ..."
-          websocat --binary "wss://${WORKER_URL}${CONNECT_PATH}" tcp:127.0.0.1:10000 &
-          sleep 3
-          if ! pgrep websocat > /dev/null; then
-            echo "❌ websocat failed to start. Check logs above."
-            exit 1
-          fi
-          echo "✅ Tunnel established. Backend is connected."
-          # زنده نگه داشتن گردش کار
-          while true; do sleep 60; done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ubuntu-files/
+          git commit -m "افزودن فایل اوبونتو [skip ci]" || echo "تغییری برای commit وجود ندارد"
+          git push
