@@ -1,0 +1,61 @@
+name: V2Ray Bridge to Arvan Worker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  v2ray-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Setup V2Ray Server
+        run: |
+          # دانلود V2Ray
+          curl -L https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip -o v2ray.zip
+          unzip v2ray.zip -d v2ray
+          cd v2ray
+
+          # ایجاد فایل کانفیگ V2Ray (VMess روی TCP پورت 10000)
+          cat > config.json << EOF
+          {
+            "inbounds": [{
+              "port": 10000,
+              "protocol": "vmess",
+              "settings": {
+                "clients": [{
+                  "id": "b831381d-6324-4d53-ad4f-8cda48b30811",   // UUID خود را تغییر دهید
+                  "alterId": 0
+                }]
+              }
+            }],
+            "outbounds": [{
+              "protocol": "freedom",
+              "settings": {}
+            }]
+          }
+          EOF
+
+          # شروع V2Ray
+          chmod +x v2ray
+          ./v2ray run &
+
+      - name: Install WebSocket tunnel tools
+        run: |
+          sudo apt update
+          sudo apt install -y python3-pip
+          pip3 install websocket-client
+          # یا از websocat استفاده می‌کنیم (سبک‌تر)
+          curl -L https://github.com/vi/websocat/releases/latest/download/websocat.x86_64-unknown-linux-musl -o websocat
+          chmod +x websocat
+          sudo mv websocat /usr/local/bin/
+
+      - name: Connect to Arvan Worker (Backend WebSocket)
+        env:
+          WORKER_URL: ${{ secrets.ARVAN_WORKER_URL }}  # مثلاً https://your-worker-domain.com
+          CONNECT_PATH: "/connect"
+        run: |
+          # اتصال خروجی به Worker در مسیر /connect، و لوله‌کشی TCP محلی (پورت 10000)
+          websocat "wss://${WORKER_URL}${CONNECT_PATH}" tcp-listen:127.0.0.1:10000 &
+          echo "Backend connected. Waiting for client..."
+          sleep infinity
