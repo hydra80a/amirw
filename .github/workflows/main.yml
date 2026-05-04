@@ -1,19 +1,27 @@
-name: V2Ray Bridge to Arvan Worker
+name: V2Ray Connect to Arvan Worker
 
 on:
   workflow_dispatch:
 
 jobs:
-  v2ray-backend:
+  connect:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # ۱. نصب V2Ray و راه‌اندازی سرور VMess روی پورت ۱۰۰۰۰
+      # ------------------------------------------------------------
       - name: Setup V2Ray Server
         run: |
-          curl -L https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip -o v2ray.zip
-          unzip v2ray.zip -d v2ray
+          curl -sL https://github.com/v2fly/v2ray-core/releases/latest/download/v2ray-linux-64.zip -o v2ray.zip
+          unzip -q v2ray.zip -d v2ray
           cd v2ray
+
+          # UUID باید دقیقاً با Worker یکسان باشد
           cat > config.json << 'EOF'
           {
             "inbounds": [{
@@ -32,21 +40,52 @@ jobs:
             }]
           }
           EOF
+
           chmod +x v2ray
           ./v2ray run &
+          sleep 2
+          echo "✅ V2Ray is running on :10000"
 
+      # ------------------------------------------------------------
+      # ۲. نصب websocat (نسخه پایدار)
+      # ------------------------------------------------------------
       - name: Install websocat
         run: |
-          curl -L https://github.com/vi/websocat/releases/latest/download/websocat.x86_64-unknown-linux-musl -o websocat
+          curl -sL https://github.com/vi/websocat/releases/latest/download/websocat.x86_64-unknown-linux-musl -o websocat
           chmod +x websocat
           sudo mv websocat /usr/local/bin/
+          echo "✅ websocat installed"
 
-      - name: Connect to Arvan Worker (Backend WebSocket)
+      # ------------------------------------------------------------
+      # ۳. بررسی سلامت Worker (تست Endpoint کانفیگ)
+      # ------------------------------------------------------------
+      - name: Verify Worker reachable
         env:
-          WORKER_URL: ${{ secrets.ARVAN_WORKER_URL }}   # مثلاً https://sub.example.com
+          WORKER_URL: ${{ secrets.ARVAN_WORKER_URL }}
+        run: |
+          echo "Checking Worker at $WORKER_URL/config ..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${WORKER_URL}/config")
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Worker /config returned HTTP $HTTP_CODE. Check Worker deployment and Route."
+            exit 1
+          fi
+          echo "✅ Worker is reachable."
+
+      # ------------------------------------------------------------
+      # ۴. اتصال به Worker و ساخت تونل WebSocket ↔ TCP
+      # ------------------------------------------------------------
+      - name: Connect to Worker (WebSocket tunnel)
+        env:
+          WORKER_URL: ${{ secrets.ARVAN_WORKER_URL }}
           CONNECT_PATH: "/connect"
         run: |
-          # دستور اصلاح شده: --binary + tcp به جای tcp-listen
+          echo "Establishing WebSocket tunnel to ${WORKER_URL}${CONNECT_PATH} ..."
           websocat --binary "wss://${WORKER_URL}${CONNECT_PATH}" tcp:127.0.0.1:10000 &
-          echo "Backend connected. Waiting for client..."
-          sleep infinity
+          sleep 3
+          if ! pgrep websocat > /dev/null; then
+            echo "❌ websocat failed to start. Check logs above."
+            exit 1
+          fi
+          echo "✅ Tunnel established. Backend is connected."
+          # زنده نگه داشتن گردش کار
+          while true; do sleep 60; done
