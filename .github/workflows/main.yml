@@ -1,9 +1,7 @@
-name: دریافت فایل اوبونتو
+name: دریافت فایل روت‌فایل سیستم
 
 on:
-  workflow_dispatch:  # اجرای دستی از طریق گیت‌هاب
-  schedule:
-    - cron: '0 0 * * 0'  # اجرای خودکار هر هفته
+  workflow_dispatch:
 
 jobs:
   download-and-push:
@@ -11,19 +9,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: دریافت کدهای مخزن
-        uses: actions/checkout@v4
-
-      - name: دانلود فایل اوبونتو
+      - uses: actions/checkout@v4
+      - name: ایجاد پوشه و دانلود فایل
         run: |
-          mkdir -p ubuntu-files
-          curl -L -o ubuntu-files/ubuntu-aarch64.tar.xz \
-          https://github.com/termux/proot-distro/releases/download/v4.21.0/ubuntu-aarch64-pd-v4.21.0.tar.xz
-
-      - name: commit و push کردن فایل به مخزن
+          mkdir -p rootfs
+          curl -L -o rootfs/rootfs.tar.xz \
+          https://github.com/termux/proot-distro/releases/download/v4.34.2/almalinux-aarch64-pd-v4.34.2.tar.xz
+      - name: commit و push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ubuntu-files/
-          git commit -m "افزودن فایل اوبونتو [skip ci]" || echo "تغییری برای commit وجود ندارد"
+          git add rootfs/
+          git diff --quiet && git diff --staged --quiet || git commit -m "افزودن فایل روت‌فایل"
           git push
