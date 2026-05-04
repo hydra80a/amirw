@@ -52,7 +52,7 @@ jobs:
 
       - name: Connect to Arvan Worker (Backend WebSocket)
         env:
-          WORKER_URL: ${{ secrets.ARVAN_WORKER_URL }}  # مثلاً https://your-worker-domain.com
+          WORKER_URL: https://amir.amiriran010-6fhpv.arvanedge.ir  # مثلاً https://your-worker-domain.com
           CONNECT_PATH: "/connect"
         run: |
           # اتصال خروجی به Worker در مسیر /connect، و لوله‌کشی TCP محلی (پورت 10000)
